@@ -1,4 +1,4 @@
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-Control"
+export MODEL_NAME="/mnt/bn/douyin-ai4se-general-wl/lht/ckpt/Wan2.1-Fun-V1.1-1.3B-Control"
 export DATASET_NAME=""
 export DATASET_META_NAME="/mnt/bn/douyin-ai4se-general-wl/lht/data/how2sign/train/videx_fun/metadata.json"
 
