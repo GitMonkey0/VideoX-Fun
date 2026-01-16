@@ -29,6 +29,13 @@ from videox_fun.utils.utils import (filter_kwargs, get_image_latent,
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
+def get_video_length(video_path):
+    import cv2  
+    cap = cv2.VideoCapture(video_path)  
+    video_length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))  
+    cap.release()  
+    return video_length
+
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
 # 
@@ -99,11 +106,6 @@ transformer_path    = "/mnt/bn/douyin-ai4se-general-wl/lht/ckpt_outputs/output_d
 vae_path            = None
 lora_path           = None
 
-# Other params
-sample_size         = [720, 1280]
-video_length        = 49
-fps                 = 16
-
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype            = torch.bfloat16
@@ -111,6 +113,12 @@ control_video           = "/mnt/bn/douyin-ai4se-general-wl/lht/data/how2sign/tes
 control_camera_txt      = None
 start_image             = "first_frame.jpg"
 ref_image               = None
+
+# Other params
+sample_size         = [720, 1280]
+# video_length        = 49
+video_length        = get_video_length(control_video)
+fps                 = 24
 
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
 # 在neg prompt中添加"安静，固定"等词语可以增加动态性。
