@@ -2,7 +2,7 @@ export MODEL_NAME="/mnt/bn/douyin-ai4se-general-wl/lht/ckpt/Wan2.1-Fun-V1.1-1.3B
 export DATASET_NAME=""
 export DATASET_META_NAME="/mnt/bn/douyin-ai4se-general-wl/lht/data/how2sign/train/videx_fun/metadata.json"
 
-NCCL_DEBUG=INFO accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json scripts/wan2.1_fun/train_control.py \
+NCCL_DEBUG=INFO accelerate launch --zero3_save_16bit_model true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json scripts/wan2.1_fun/train_control.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path="$MODEL_NAME" \
   --train_data_dir="$DATASET_NAME" \
