@@ -1135,6 +1135,7 @@ def main():
             new_examples["text"]         = []
             # Used in Control Mode
             new_examples["control_pixel_values"] = []
+            new_examples["hl_ids"] = []
             # Used in Control Ref Mode
             if args.train_mode != "control":
                 new_examples["ref_pixel_values"] = []
