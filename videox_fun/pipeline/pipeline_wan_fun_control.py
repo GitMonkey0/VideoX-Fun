@@ -487,6 +487,7 @@ class WanFunControlPipeline(DiffusionPipeline):
         latents: Optional[torch.FloatTensor] = None,
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
+        hl_ids: Optional[torch.LongTensor] = None,
         output_type: str = "numpy",
         return_dict: bool = False,
         callback_on_step_end: Optional[
@@ -593,6 +594,9 @@ class WanFunControlPipeline(DiffusionPipeline):
         )
         if comfyui_progressbar:
             pbar.update(1)
+
+        if hl_ids is not None:
+            hl_ids = hl_ids.to(device=device, dtype=torch.long)
 
         # Prepare mask latent variables
         if control_camera_video is not None:
@@ -736,6 +740,11 @@ class WanFunControlPipeline(DiffusionPipeline):
                     torch.cat([clip_context] * 2) if do_classifier_free_guidance else clip_context
                 )
 
+                if hl_ids is not None:
+                    hl_ids_input = torch.cat([hl_ids] * 2) if do_classifier_free_guidance else hl_ids
+                else:
+                    hl_ids_input = None
+
                 if ref_image_latentes is not None:
                     full_ref = (
                         torch.cat([ref_image_latentes] * 2) if do_classifier_free_guidance else ref_image_latentes
@@ -757,6 +766,7 @@ class WanFunControlPipeline(DiffusionPipeline):
                         y_camera=control_camera_latents_input, 
                         full_ref=full_ref,
                         clip_fea=clip_context_input,
+                        hl_ids=hl_ids_input,
                     )
 
                 # perform guidance

@@ -349,6 +349,19 @@ class ImageVideoControlDataset(Dataset):
         data_info = self.dataset[idx % len(self.dataset)]
         video_id, text = data_info['file_path'], data_info['text']
 
+        hl_ids = None
+        hl_path = data_info.get("hl_path", None)
+        if hl_path is not None:
+            if self.data_root is not None:
+                hl_path = os.path.join(self.data_root, hl_path)
+            if os.path.isfile(hl_path):
+                if hl_path.endswith((".pt", ".pth")):
+                    hl_ids = torch.load(hl_path, map_location="cpu")
+                else:
+                    hl_ids = np.load(hl_path)
+                if isinstance(hl_ids, torch.Tensor):
+                    hl_ids = hl_ids.cpu().numpy()
+
         if data_info.get('type', 'image')=='video':
             if self.data_root is None:
                 video_dir = video_id
@@ -493,7 +506,14 @@ class ImageVideoControlDataset(Dataset):
             else:
                 subject_image = None
 
-            return pixel_values, control_pixel_values, subject_image, control_camera_values, text, "video"
+            if hl_ids is not None:
+                if hl_ids.shape[0] > np.max(batch_index):
+                    hl_ids = hl_ids[batch_index]
+                else:
+                    hl_ids = hl_ids[:len(batch_index)]
+                hl_ids = hl_ids.astype(np.int64)
+
+            return pixel_values, control_pixel_values, subject_image, control_camera_values, text, "video", hl_ids
         else:
             image_path, text = data_info['file_path'], data_info['text']
             if self.data_root is not None:
@@ -549,7 +569,7 @@ class ImageVideoControlDataset(Dataset):
             else:
                 subject_image = None
 
-            return image, control_image, subject_image, None, text, 'image'
+            return image, control_image, subject_image, None, text, 'image', None
 
     def __len__(self):
         return self.length
@@ -565,7 +585,7 @@ class ImageVideoControlDataset(Dataset):
                 if data_type_local != data_type:
                     raise ValueError("data_type_local != data_type")
 
-                pixel_values, control_pixel_values, subject_image, control_camera_values, name, data_type = self.get_batch(idx)
+                pixel_values, control_pixel_values, subject_image, control_camera_values, name, data_type, hl_ids = self.get_batch(idx)
 
                 sample["pixel_values"] = pixel_values
                 sample["control_pixel_values"] = control_pixel_values
@@ -576,6 +596,9 @@ class ImageVideoControlDataset(Dataset):
 
                 if self.enable_camera_info:
                     sample["control_camera_values"] = control_camera_values
+
+                if hl_ids is not None:
+                    sample["hl_ids"] = hl_ids
 
                 if len(sample) > 0:
                     break

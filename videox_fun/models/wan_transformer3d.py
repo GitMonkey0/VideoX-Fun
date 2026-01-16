@@ -554,6 +554,9 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         add_ref_conv=False,
         in_dim_ref_conv=16,
         cross_attn_type=None,
+        add_hl_tokens=False,
+        hl_vocab_size=26,
+        hl_pad_id=-1,
     ):
         r"""
         Initialize the diffusion model backbone.
@@ -610,6 +613,9 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.qk_norm = qk_norm
         self.cross_attn_norm = cross_attn_norm
         self.eps = eps
+        self.add_hl_tokens = add_hl_tokens
+        self.hl_vocab_size = hl_vocab_size
+        self.hl_pad_id = hl_pad_id
 
         # embeddings
         self.patch_embedding = nn.Conv3d(
@@ -617,6 +623,13 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.text_embedding = nn.Sequential(
             nn.Linear(text_dim, dim), nn.GELU(approximate='tanh'),
             nn.Linear(dim, dim))
+
+        if add_hl_tokens:
+            self.hl_embedding = nn.Embedding(hl_vocab_size + 1, dim)
+            self.hl_proj = nn.Identity()
+        else:
+            self.hl_embedding = None
+            self.hl_proj = None
 
         self.time_embedding = nn.Sequential(
             nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
@@ -785,6 +798,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         y_camera=None,
         full_ref=None,
         subject_ref=None,
+        hl_ids=None,
         cond_flag=True,
     ):
         r"""
@@ -900,6 +914,17 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         if clip_fea is not None:
             context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
             context = torch.concat([context_clip, context], dim=1)
+
+        if self.hl_embedding is not None and hl_ids is not None:
+            hl_ids = hl_ids.long().to(device)
+            hl_ids = hl_ids + 1
+            hl_ids = torch.clamp(hl_ids, 0, self.hl_embedding.num_embeddings - 1)
+            if hl_ids.dim() == 2:
+                hl_ids = hl_ids.unsqueeze(1)
+            bsz, num_frames, num_tokens = hl_ids.shape
+            hl_tokens = self.hl_embedding(hl_ids.view(bsz, num_frames * num_tokens))
+            hl_tokens = self.hl_proj(hl_tokens) if self.hl_proj is not None else hl_tokens
+            context = torch.cat([context, hl_tokens], dim=1)
 
         # Context Parallel
         if self.sp_world_size > 1:

@@ -1144,6 +1144,10 @@ def main():
             if args.train_mode == "control_camera_ref":
                 new_examples["control_camera_values"] = []
 
+            has_hl_ids = any(example.get("hl_ids", None) is not None for example in examples)
+            if has_hl_ids:
+                new_examples["hl_ids"] = []
+
             # Get downsample ratio in image and videos
             pixel_value     = examples[0]["pixel_values"]
             data_type       = examples[0]["data_type"]
@@ -1307,6 +1311,21 @@ def main():
                 
                 new_examples["text"].append(example["text"])
 
+                if has_hl_ids:
+                    hl_ids = example.get("hl_ids", None)
+                    if hl_ids is None:
+                        hl_ids = torch.full((batch_video_length, 40), -1, dtype=torch.long)
+                    else:
+                        if isinstance(hl_ids, np.ndarray):
+                            hl_ids = torch.from_numpy(hl_ids)
+                        hl_ids = hl_ids.long()
+                        if hl_ids.size(0) > batch_video_length:
+                            hl_ids = hl_ids[:batch_video_length]
+                        if hl_ids.size(0) < batch_video_length:
+                            pad = torch.full((batch_video_length - hl_ids.size(0), hl_ids.size(1)), -1, dtype=torch.long)
+                            hl_ids = torch.cat([hl_ids, pad], dim=0)
+                    new_examples["hl_ids"].append(hl_ids)
+
                 if args.train_mode != "control":
                     if args.control_ref_image == "first_frame":
                         clip_index = 0
@@ -1340,6 +1359,9 @@ def main():
                 new_examples["clip_idx"] = torch.tensor(new_examples["clip_idx"])
             if args.train_mode == "control_camera_ref":
                 new_examples["control_camera_values"] = torch.stack([example[:batch_video_length] for example in new_examples["control_camera_values"]])
+
+            if has_hl_ids:
+                new_examples["hl_ids"] = torch.stack(new_examples["hl_ids"], dim=0)
 
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
@@ -1535,6 +1557,9 @@ def main():
                 control_pixel_values = batch["control_pixel_values"].to(weight_dtype)
                 if args.train_mode == "control_camera_ref":
                     control_camera_values = batch["control_camera_values"].to(weight_dtype)
+                hl_ids = batch.get("hl_ids", None)
+                if hl_ids is not None:
+                    hl_ids = hl_ids.long()
 
                 # Increase the batch size when the length of the latent sequence of the current sample is small
                 if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
@@ -1543,6 +1568,8 @@ def main():
                         control_pixel_values = torch.tile(control_pixel_values, (4, 1, 1, 1, 1))
                         if args.train_mode == "control_camera_ref":
                             control_camera_values = torch.tile(control_camera_values, (4, 1, 1, 1, 1))
+                        if hl_ids is not None:
+                            hl_ids = torch.tile(hl_ids, (4, 1, 1))
                         if args.enable_text_encoder_in_dataloader:
                             batch['encoder_hidden_states'] = torch.tile(batch['encoder_hidden_states'], (4, 1, 1))
                             batch['encoder_attention_mask'] = torch.tile(batch['encoder_attention_mask'], (4, 1))
@@ -1553,6 +1580,8 @@ def main():
                         control_pixel_values = torch.tile(control_pixel_values, (2, 1, 1, 1, 1))
                         if args.train_mode == "control_camera_ref":
                             control_camera_values = torch.tile(control_camera_values, (2, 1, 1, 1, 1))
+                        if hl_ids is not None:
+                            hl_ids = torch.tile(hl_ids, (2, 1, 1))
                         if args.enable_text_encoder_in_dataloader:
                             batch['encoder_hidden_states'] = torch.tile(batch['encoder_hidden_states'], (2, 1, 1))
                             batch['encoder_attention_mask'] = torch.tile(batch['encoder_attention_mask'], (2, 1))
@@ -1600,6 +1629,8 @@ def main():
 
                     pixel_values = pixel_values[:, :temp_n_frames, :, :]
                     control_pixel_values = control_pixel_values[:, :temp_n_frames, :, :]
+                    if hl_ids is not None:
+                        hl_ids = hl_ids[:, :temp_n_frames, :]
                     
                 # Keep all node same token length to accelerate the traning when resolution grows.
                 if args.keep_all_node_same_token_length:
@@ -1623,6 +1654,8 @@ def main():
 
                     pixel_values = pixel_values[:, :actual_video_length, :, :]
                     control_pixel_values = control_pixel_values[:, :actual_video_length, :, :]
+                    if hl_ids is not None:
+                        hl_ids = hl_ids[:, :actual_video_length, :]
 
                 if args.low_vram:
                     torch.cuda.empty_cache()
@@ -1752,6 +1785,9 @@ def main():
                     text_encoder.to('cpu')
                     torch.cuda.empty_cache()
 
+                if hl_ids is not None:
+                    hl_ids = hl_ids.to(device=latents.device)
+
                 bsz, channel, num_frames, height, width = latents.size()
                 noise = torch.randn(latents.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
 
@@ -1809,6 +1845,7 @@ def main():
                         y_camera=control_camera_latents if args.train_mode == "control_camera_ref" else None,
                         clip_fea=clip_context,
                         full_ref=full_ref if args.add_full_ref_image_in_self_attention else None,
+                        hl_ids=hl_ids,
                     )
                 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):

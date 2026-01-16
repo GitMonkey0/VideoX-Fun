@@ -5,6 +5,8 @@ transformer_additional_kwargs:
   dict_mapping:
     in_dim: in_channels
     dim: hidden_size
+  add_hl_tokens: true
+  hl_vocab_size: 26
 
 vae_kwargs:
   vae_subpath: Wan2.1_VAE.pth
