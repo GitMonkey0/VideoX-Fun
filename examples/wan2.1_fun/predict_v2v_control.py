@@ -29,6 +29,13 @@ from videox_fun.utils.utils import (filter_kwargs, get_image_latent,
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
+def get_video_length(video_path):
+    import cv2  
+    cap = cv2.VideoCapture(video_path)  
+    video_length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))  
+    cap.release()  
+    return video_length
+
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
 # 
@@ -42,13 +49,13 @@ from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
-GPU_memory_mode     = "sequential_cpu_offload"
+GPU_memory_mode     = "model_full_load"
 # Multi GPUs config
 # Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
 # For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
 # If you are using 1 GPU, you can set ulysses_degree = 1 and ring_degree = 1.
-ulysses_degree      = 1
-ring_degree         = 1
+ulysses_degree      = 4
+ring_degree         = 2
 # Use FSDP to save more GPU memory in multi gpus.
 fsdp_dit            = False
 fsdp_text_encoder   = True
@@ -84,7 +91,7 @@ riflex_k            = 6
 # Config and model path
 config_path         = "config/wan2.1/wan_civitai.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/Wan2.1-Fun-V1.1-1.3B-Control"
+model_name          = "/mnt/bn/douyin-ai4se-general-wl/lht/ckpt/Wan2.1-Fun-V1.1-1.3B-Control"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
@@ -92,30 +99,31 @@ sampler_name        = "Flow"
 # Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
 # If you want to generate a 480p video, it is recommended to set the shift value to 3.0.
 # If you want to generate a 720p video, it is recommended to set the shift value to 5.0.
-shift               = 3 
+shift               = 5 
 
 # Load pretrained model if need
-transformer_path    = None
+transformer_path    = "/mnt/bn/douyin-ai4se-general-wl/lht/ckpt_outputs/output_dir/checkpoint-350/diffusion_pytorch_model.safetensors"
 vae_path            = None
 lora_path           = None
-
-# Other params
-sample_size         = [832, 480]
-video_length        = 49
-fps                 = 16
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype            = torch.bfloat16
-control_video           = "asset/pose.mp4"
+control_video           = "/mnt/bn/douyin-ai4se-general-wl/lht/data/how2sign/test/control_videos/-g0iPSnQt6w_13-1-rgb_front.avi"
 control_camera_txt      = None
-start_image             = None
+start_image             = "/mnt/bn/douyin-ai4se-general-wl/lht/data/how2sign/test/first_frames/-g0iPSnQt6w_13-1-rgb_front.jpg"
 ref_image               = None
+
+# Other params
+sample_size         = [720, 1280]
+# video_length        = 49
+video_length        = get_video_length(control_video)
+fps                 = 24
 
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
 # 在neg prompt中添加"安静，固定"等词语可以增加动态性。
-prompt              = "在这个阳光明媚的户外花园里，美女身穿一袭及膝的白色无袖连衣裙，裙摆在她轻盈的舞姿中轻柔地摆动，宛如一只翩翩起舞的蝴蝶。阳光透过树叶间洒下斑驳的光影，映衬出她柔和的脸庞和清澈的眼眸，显得格外优雅。仿佛每一个动作都在诉说着青春与活力，她在草地上旋转，裙摆随之飞扬，仿佛整个花园都因她的舞动而欢愉。周围五彩缤纷的花朵在微风中摇曳，玫瑰、菊花、百合，各自释放出阵阵香气，营造出一种轻松而愉快的氛围。"
-negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+prompt              = ""
+negative_prompt     = ""
 
 # Using longer neg prompt such as "Blurring, mutation, deformation, distortion, dark and solid, comics, text subtitles, line art." can increase stability
 # Adding words such as "quiet, solid" to the neg prompt can increase dynamism.
