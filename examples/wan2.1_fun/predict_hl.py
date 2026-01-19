@@ -109,9 +109,9 @@ lora_path           = None
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype            = torch.bfloat16
-control_video           = "/mnt/bn/douyin-ai4se-general-wl/lht/data/how2sign/test/hands_only_avi/-g0iPSnQt6w_13-1-rgb_front.avi"
+control_video           = "/mnt/bn/douyin-ai4se-general-wl/lht/data/how2sign/test/control_videos/-g0iPSnQt6w_13-1-rgb_front.avi"
 control_camera_txt      = None
-start_image             = "first_frame.jpg"
+start_image             = "/mnt/bn/douyin-ai4se-general-wl/lht/data/how2sign/test/first_frames/-g0iPSnQt6w_13-1-rgb_front.jpg"
 ref_image               = None
 
 # Other params
