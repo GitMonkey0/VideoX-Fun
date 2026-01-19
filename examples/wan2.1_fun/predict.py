@@ -102,7 +102,7 @@ sampler_name        = "Flow"
 shift               = 5 
 
 # Load pretrained model if need
-transformer_path    = "/mnt/bn/douyin-ai4se-general-wl/lht/ckpt_outputs/output_dir/checkpoint-35/diffusion_pytorch_model.safetensors"
+transformer_path    = "/mnt/bn/douyin-ai4se-general-wl/lht/ckpt_outputs/wan_hl_full/checkpoint-350/diffusion_pytorch_model.safetensors"
 vae_path            = None
 lora_path           = None
 

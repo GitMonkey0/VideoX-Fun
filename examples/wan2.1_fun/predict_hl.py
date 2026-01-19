@@ -102,7 +102,7 @@ sampler_name        = "Flow"
 shift               = 5 
 
 # Load pretrained model if need
-transformer_path    = "/mnt/bn/douyin-ai4se-general-wl/lht/ckpt_outputs/output_dir/checkpoint-35/diffusion_pytorch_model.safetensors"
+transformer_path    = "/mnt/bn/douyin-ai4se-general-wl/lht/ckpt_outputs/wan_hl_full/checkpoint-350/diffusion_pytorch_model.safetensors"
 vae_path            = None
 lora_path           = None
 
@@ -134,7 +134,7 @@ seed                    = 43
 num_inference_steps     = 50
 lora_weight             = 0.55
 save_path               = "samples/wan-videos-fun-control"
-hl_path = "/path/to/hl.npy" 
+hl_path = "/mnt/bn/douyin-ai4se-general-wl/lht/data/how2sign/test/hl/-g0iPSnQt6w_13-1-rgb_front.npy" 
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
