@@ -475,6 +475,7 @@ class WanFunControlPipeline(DiffusionPipeline):
         width: int = 720,
         control_video: Union[torch.FloatTensor] = None,
         control_camera_video: Union[torch.FloatTensor] = None,
+        roi_mask: Optional[torch.FloatTensor] = None,
         start_image: Union[torch.FloatTensor] = None,
         ref_image: Union[torch.FloatTensor] = None,
         num_frames: int = 49,
@@ -526,6 +527,11 @@ class WanFunControlPipeline(DiffusionPipeline):
         self._guidance_scale = guidance_scale
         self._attention_kwargs = attention_kwargs
         self._interrupt = False
+
+        if roi_mask is not None and control_camera_video is not None:
+            raise ValueError("`roi_mask` only supports v2v control. Remove `control_camera_video`.")
+        if roi_mask is not None and control_video is None:
+            raise ValueError("`roi_mask` only supports v2v control. Provide `control_video`.")
 
         # 2. Default call parameters
         if prompt is not None and isinstance(prompt, str):
@@ -631,6 +637,27 @@ class WanFunControlPipeline(DiffusionPipeline):
             control_video_latents = torch.zeros_like(latents).to(device, weight_dtype)
             control_camera_latents = None
 
+        if roi_mask is not None:
+            if roi_mask.dim() == 4:
+                roi_mask = roi_mask.unsqueeze(1)
+            roi_video_length = roi_mask.shape[2]
+            roi_mask = roi_mask.to(dtype=torch.float32)
+            roi_mask = self.mask_processor.preprocess(
+                rearrange(roi_mask, "b c f h w -> (b f) c h w"),
+                height=height,
+                width=width,
+            )
+            roi_mask = rearrange(roi_mask, "(b f) c h w -> b c f h w", f=roi_video_length)
+            roi_mask = F.interpolate(
+                roi_mask.to(device=device, dtype=weight_dtype),
+                size=latents.shape[2:],
+                mode="trilinear",
+                align_corners=False,
+            )
+            roi_mask_latents = roi_mask[:, 0]
+        else:
+            roi_mask_latents = None
+
         if start_image is not None:
             video_length = start_image.shape[2]
             start_image = self.image_processor.preprocess(rearrange(start_image, "b c f h w -> (b f) c h w"), height=height, width=width) 
@@ -726,6 +753,12 @@ class WanFunControlPipeline(DiffusionPipeline):
                     ).to(device, weight_dtype)
                     control_camera_latents_input = None
 
+                roi_mask_input = None
+                if roi_mask_latents is not None:
+                    roi_mask_input = (
+                        torch.cat([roi_mask_latents] * 2) if do_classifier_free_guidance else roi_mask_latents
+                    ).to(device, weight_dtype)
+
                 start_image_latentes_conv_in_input = (
                     torch.cat([start_image_latentes_conv_in] * 2) if do_classifier_free_guidance else start_image_latentes_conv_in
                 ).to(device, weight_dtype)
@@ -757,6 +790,7 @@ class WanFunControlPipeline(DiffusionPipeline):
                         y_camera=control_camera_latents_input, 
                         full_ref=full_ref,
                         clip_fea=clip_context_input,
+                        roi_mask=roi_mask_input,
                     )
 
                 # perform guidance

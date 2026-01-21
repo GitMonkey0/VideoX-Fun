@@ -276,6 +276,9 @@ class ImageVideoControlDataset(Dataset):
         return_file_name=False,
         enable_subject_info=False,
         padding_subject_info=True,
+        enable_hand_roi=False,
+        hand_roi_root=None,
+        hand_roi_key="hand_roi_path",
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
@@ -311,6 +314,9 @@ class ImageVideoControlDataset(Dataset):
         self.enable_camera_info = enable_camera_info
         self.enable_subject_info = enable_subject_info
         self.padding_subject_info = padding_subject_info
+        self.enable_hand_roi = enable_hand_roi
+        self.hand_roi_root = hand_roi_root
+        self.hand_roi_key = hand_roi_key
 
         self.video_length_drop_start = video_length_drop_start
         self.video_length_drop_end = video_length_drop_end
@@ -333,6 +339,12 @@ class ImageVideoControlDataset(Dataset):
                     transforms.CenterCrop(self.video_sample_size)
                 ]
             )
+        self.video_transforms_roi = transforms.Compose(
+            [
+                transforms.Resize(min(self.video_sample_size)),
+                transforms.CenterCrop(self.video_sample_size),
+            ]
+        )
 
         # Image params
         self.image_sample_size  = tuple(image_sample_size) if not isinstance(image_sample_size, int) else (image_sample_size, image_sample_size)
@@ -342,8 +354,58 @@ class ImageVideoControlDataset(Dataset):
             transforms.ToTensor(),
             transforms.Normalize([0.5, 0.5, 0.5],[0.5, 0.5, 0.5])
         ])
+        self.image_transforms_roi = transforms.Compose([
+            transforms.Resize(min(self.image_sample_size)),
+            transforms.CenterCrop(self.image_sample_size),
+        ])
 
         self.larger_side_of_image_and_video = max(min(self.image_sample_size), min(self.video_sample_size))
+
+    def _resolve_hand_roi_path(self, data_info, file_path):
+        roi_path = data_info.get(self.hand_roi_key, None)
+        if roi_path is None and self.hand_roi_root is not None:
+            roi_path = os.path.splitext(file_path)[0] + ".npy"
+            roi_path = os.path.join(self.hand_roi_root, roi_path)
+
+        if roi_path is None:
+            return None
+
+        if not os.path.isabs(roi_path):
+            if self.hand_roi_root is not None:
+                roi_path = os.path.join(self.hand_roi_root, roi_path)
+            elif self.data_root is not None:
+                roi_path = os.path.join(self.data_root, roi_path)
+
+        return roi_path
+
+    def _load_hand_roi(self, data_info, file_path, batch_index=None, num_frames=None):
+        roi_path = self._resolve_hand_roi_path(data_info, file_path)
+        if roi_path is None or not os.path.exists(roi_path):
+            return None
+
+        if roi_path.endswith(".npy") or roi_path.endswith(".npz"):
+            roi = np.load(roi_path)
+            if isinstance(roi, np.lib.npyio.NpzFile):
+                roi = roi["arr_0"]
+        else:
+            roi = np.array(Image.open(roi_path).convert("L"))
+
+        if roi.ndim == 4:
+            roi = roi[..., 0]
+
+        if roi.ndim == 3 and batch_index is not None:
+            roi = roi[batch_index]
+        elif roi.ndim == 3 and num_frames is not None:
+            roi = roi[:num_frames]
+        elif roi.ndim == 2 and num_frames is not None:
+            roi = np.repeat(roi[None, ...], repeats=num_frames, axis=0)
+
+        roi = roi.astype(np.float32)
+        if roi.max() > 1.0:
+            roi = roi / 255.0
+        roi = np.clip(roi, 0.0, 1.0)
+
+        return roi
     
     def get_batch(self, idx):
         data_info = self.dataset[idx % len(self.dataset)]
@@ -397,6 +459,18 @@ class ImageVideoControlDataset(Dataset):
                 # Random use no text generation
                 if random.random() < self.text_drop_ratio:
                     text = ''
+
+                hand_roi = None
+                if self.enable_hand_roi:
+                    hand_roi = self._load_hand_roi(data_info, video_id, batch_index=batch_index, num_frames=min_sample_n_frames)
+                    if hand_roi is None:
+                        if not self.enable_bucket:
+                            hand_roi = torch.zeros(pixel_values.size(0), 1, pixel_values.size(2), pixel_values.size(3))
+                        else:
+                            hand_roi = np.zeros((pixel_values.shape[0], pixel_values.shape[1], pixel_values.shape[2]), dtype=np.float32)
+                    elif not self.enable_bucket:
+                        hand_roi = torch.from_numpy(hand_roi).unsqueeze(1)
+                        hand_roi = self.video_transforms_roi(hand_roi)
 
             control_video_id = data_info['control_file_path']
             
@@ -493,7 +567,7 @@ class ImageVideoControlDataset(Dataset):
             else:
                 subject_image = None
 
-            return pixel_values, control_pixel_values, subject_image, control_camera_values, text, "video"
+            return pixel_values, control_pixel_values, subject_image, control_camera_values, hand_roi, text, "video"
         else:
             image_path, text = data_info['file_path'], data_info['text']
             if self.data_root is not None:
@@ -548,8 +622,19 @@ class ImageVideoControlDataset(Dataset):
                     subject_image = subject_images
             else:
                 subject_image = None
+            hand_roi = None
+            if self.enable_hand_roi:
+                hand_roi = self._load_hand_roi(data_info, image_path, batch_index=None, num_frames=1)
+                if hand_roi is None:
+                    if not self.enable_bucket:
+                        hand_roi = torch.zeros(1, 1, image.size(2), image.size(3))
+                    else:
+                        hand_roi = np.zeros((1, image.shape[1], image.shape[2]), dtype=np.float32)
+                elif not self.enable_bucket:
+                    hand_roi = torch.from_numpy(hand_roi).unsqueeze(1)
+                    hand_roi = self.image_transforms_roi(hand_roi)
 
-            return image, control_image, subject_image, None, text, 'image'
+            return image, control_image, subject_image, None, hand_roi, text, 'image'
 
     def __len__(self):
         return self.length
@@ -565,11 +650,12 @@ class ImageVideoControlDataset(Dataset):
                 if data_type_local != data_type:
                     raise ValueError("data_type_local != data_type")
 
-                pixel_values, control_pixel_values, subject_image, control_camera_values, name, data_type = self.get_batch(idx)
+                pixel_values, control_pixel_values, subject_image, control_camera_values, hand_roi, name, data_type = self.get_batch(idx)
 
                 sample["pixel_values"] = pixel_values
                 sample["control_pixel_values"] = control_pixel_values
                 sample["subject_image"] = subject_image
+                sample["hand_roi"] = hand_roi
                 sample["text"] = name
                 sample["data_type"] = data_type
                 sample["idx"] = idx

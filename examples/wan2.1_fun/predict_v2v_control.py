@@ -111,6 +111,11 @@ control_video           = "asset/pose.mp4"
 control_camera_txt      = None
 start_image             = None
 ref_image               = None
+roi_mask_path            = None
+enable_roi_token_merge   = False
+roi_merge_stride         = 2
+roi_token_budget_ratio   = 1.0
+roi_mask_threshold       = 0.5
 
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
 # 在neg prompt中添加"安静，固定"等词语可以增加动态性。
@@ -136,6 +141,11 @@ transformer = WanTransformer3DModel.from_pretrained(
     low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
 )
+
+transformer.enable_roi_token_merge = enable_roi_token_merge
+transformer.roi_merge_stride = roi_merge_stride
+transformer.roi_token_budget_ratio = roi_token_budget_ratio
+transformer.roi_mask_threshold = roi_mask_threshold
 
 if transformer_path is not None:
     print(f"From checkpoint: {transformer_path}")
@@ -286,6 +296,17 @@ with torch.no_grad():
         input_video, input_video_mask, _, _ = get_video_to_video_latent(control_video, video_length=video_length, sample_size=sample_size, fps=fps, ref_image=None)
         control_camera_video = None
 
+    roi_mask = None
+    if roi_mask_path is not None:
+        roi_mask = np.load(roi_mask_path)
+        if roi_mask.ndim == 2:
+            roi_mask = roi_mask[None, ...]
+        if roi_mask.ndim == 3:
+            roi_mask = roi_mask[None, None, ...]
+        elif roi_mask.ndim == 4:
+            roi_mask = roi_mask[None, ...]
+        roi_mask = torch.from_numpy(roi_mask).float()
+
     sample = pipeline(
         prompt, 
         num_frames = video_length,
@@ -298,6 +319,7 @@ with torch.no_grad():
 
         control_video = input_video,
         control_camera_video = control_camera_video,
+        roi_mask = roi_mask,
         ref_image = ref_image,
         start_image = start_image,
         clip_image = clip_image,

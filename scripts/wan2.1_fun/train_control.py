@@ -614,6 +614,46 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--enable_hand_roi",
+        action="store_true",
+        help="Enable loading hand ROI masks in dataset.",
+    )
+    parser.add_argument(
+        "--hand_roi_root",
+        type=str,
+        default=None,
+        help="Root directory for hand ROI masks.",
+    )
+    parser.add_argument(
+        "--hand_roi_key",
+        type=str,
+        default="hand_roi_path",
+        help="Metadata key for hand ROI path.",
+    )
+    parser.add_argument(
+        "--enable_roi_token_merge",
+        action="store_true",
+        help="Enable ROI-aware token reallocation in transformer.",
+    )
+    parser.add_argument(
+        "--roi_merge_stride",
+        type=int,
+        default=2,
+        help="Spatial merge stride for background tokens.",
+    )
+    parser.add_argument(
+        "--roi_token_budget_ratio",
+        type=float,
+        default=1.0,
+        help="Token budget ratio relative to base seq_len.",
+    )
+    parser.add_argument(
+        "--roi_mask_threshold",
+        type=float,
+        default=0.5,
+        help="Threshold for ROI mask binarization.",
+    )
+    parser.add_argument(
         "--weighting_scheme",
         type=str,
         default="none",
@@ -808,6 +848,11 @@ def main():
         os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
     ).to(weight_dtype)
+
+    transformer3d.enable_roi_token_merge = args.enable_roi_token_merge
+    transformer3d.roi_merge_stride = args.roi_merge_stride
+    transformer3d.roi_token_budget_ratio = args.roi_token_budget_ratio
+    transformer3d.roi_mask_threshold = args.roi_mask_threshold
 
     # Freeze vae and text_encoder and set transformer3d to trainable
     vae.requires_grad_(False)
@@ -1056,7 +1101,10 @@ def main():
         video_repeat=args.video_repeat, 
         image_sample_size=args.image_sample_size,
         enable_bucket=args.enable_bucket, 
-        enable_camera_info=args.train_mode == "control_camera_ref"
+        enable_camera_info=args.train_mode == "control_camera_ref",
+        enable_hand_roi=args.enable_hand_roi,
+        hand_roi_root=args.hand_roi_root,
+        hand_roi_key=args.hand_roi_key,
     )
 
     def worker_init_fn(_seed):
@@ -1135,6 +1183,8 @@ def main():
             new_examples["text"]         = []
             # Used in Control Mode
             new_examples["control_pixel_values"] = []
+            if args.enable_hand_roi:
+                new_examples["hand_roi"] = []
             # Used in Control Ref Mode
             if args.train_mode != "control":
                 new_examples["ref_pixel_values"] = []
@@ -1289,6 +1339,23 @@ def main():
     
                 new_examples["pixel_values"].append(transform(pixel_values)[:batch_video_length])
                 new_examples["control_pixel_values"].append(transform(control_pixel_values))
+
+                if args.enable_hand_roi:
+                    hand_roi = example.get("hand_roi", None)
+                    if hand_roi is None:
+                        local_hand_roi = torch.zeros(
+                            new_examples["pixel_values"][-1].size(0),
+                            1,
+                            new_examples["pixel_values"][-1].size(2),
+                            new_examples["pixel_values"][-1].size(3),
+                        )
+                    else:
+                        if isinstance(hand_roi, torch.Tensor):
+                            local_hand_roi = hand_roi
+                        else:
+                            local_hand_roi = torch.from_numpy(hand_roi).unsqueeze(1)
+                        local_hand_roi = transform_no_normalize(local_hand_roi)
+                    new_examples["hand_roi"].append(local_hand_roi[:batch_video_length])
             
                 if args.train_mode == "control_camera_ref":
                     control_camera_values = example.get("control_camera_values", None)
@@ -1334,6 +1401,8 @@ def main():
             # Limit the number of frames to the same
             new_examples["pixel_values"] = torch.stack([example for example in new_examples["pixel_values"]])
             new_examples["control_pixel_values"] = torch.stack([example[:batch_video_length] for example in new_examples["control_pixel_values"]])
+            if args.enable_hand_roi:
+                new_examples["hand_roi"] = torch.stack([example[:batch_video_length] for example in new_examples["hand_roi"]])
             if args.train_mode != "control":
                 new_examples["ref_pixel_values"] = torch.stack([example for example in new_examples["ref_pixel_values"]])
                 new_examples["clip_pixel_values"] = torch.stack([example for example in new_examples["clip_pixel_values"]])
@@ -1533,6 +1602,9 @@ def main():
                 # Convert images to latent space
                 pixel_values = batch["pixel_values"].to(weight_dtype)
                 control_pixel_values = batch["control_pixel_values"].to(weight_dtype)
+                hand_roi = batch.get("hand_roi", None)
+                if hand_roi is not None:
+                    hand_roi = hand_roi.to(weight_dtype)
                 if args.train_mode == "control_camera_ref":
                     control_camera_values = batch["control_camera_values"].to(weight_dtype)
 
@@ -1541,6 +1613,8 @@ def main():
                     if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                         pixel_values = torch.tile(pixel_values, (4, 1, 1, 1, 1))
                         control_pixel_values = torch.tile(control_pixel_values, (4, 1, 1, 1, 1))
+                        if hand_roi is not None:
+                            hand_roi = torch.tile(hand_roi, (4, 1, 1, 1, 1))
                         if args.train_mode == "control_camera_ref":
                             control_camera_values = torch.tile(control_camera_values, (4, 1, 1, 1, 1))
                         if args.enable_text_encoder_in_dataloader:
@@ -1551,6 +1625,8 @@ def main():
                     elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                         pixel_values = torch.tile(pixel_values, (2, 1, 1, 1, 1))
                         control_pixel_values = torch.tile(control_pixel_values, (2, 1, 1, 1, 1))
+                        if hand_roi is not None:
+                            hand_roi = torch.tile(hand_roi, (2, 1, 1, 1, 1))
                         if args.train_mode == "control_camera_ref":
                             control_camera_values = torch.tile(control_camera_values, (2, 1, 1, 1, 1))
                         if args.enable_text_encoder_in_dataloader:
@@ -1600,6 +1676,8 @@ def main():
 
                     pixel_values = pixel_values[:, :temp_n_frames, :, :]
                     control_pixel_values = control_pixel_values[:, :temp_n_frames, :, :]
+                    if hand_roi is not None:
+                        hand_roi = hand_roi[:, :temp_n_frames, :, :]
                     
                 # Keep all node same token length to accelerate the traning when resolution grows.
                 if args.keep_all_node_same_token_length:
@@ -1623,6 +1701,8 @@ def main():
 
                     pixel_values = pixel_values[:, :actual_video_length, :, :]
                     control_pixel_values = control_pixel_values[:, :actual_video_length, :, :]
+                    if hand_roi is not None:
+                        hand_roi = hand_roi[:, :actual_video_length, :, :]
 
                 if args.low_vram:
                     torch.cuda.empty_cache()
@@ -1717,6 +1797,21 @@ def main():
                             clip_context.append(_clip_context if not zero_init_clip_in else torch.zeros_like(_clip_context))
                             
                         clip_context = torch.cat(clip_context)
+
+                    hand_roi_latent = None
+                    if hand_roi is not None:
+                        hand_roi_latent = hand_roi.to(latents.device, dtype=latents.dtype)
+                        if hand_roi_latent.dim() == 5:
+                            hand_roi_latent = hand_roi_latent.permute(0, 2, 1, 3, 4)
+                        elif hand_roi_latent.dim() == 4:
+                            hand_roi_latent = hand_roi_latent.unsqueeze(1)
+                        hand_roi_latent = F.interpolate(
+                            hand_roi_latent,
+                            size=latents.shape[2:],
+                            mode="trilinear",
+                            align_corners=False,
+                        )
+                        hand_roi_latent = hand_roi_latent[:, 0]
                                                 
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:
@@ -1809,6 +1904,7 @@ def main():
                         y_camera=control_camera_latents if args.train_mode == "control_camera_ref" else None,
                         clip_fea=clip_context,
                         full_ref=full_ref if args.add_full_ref_image_in_self_attention else None,
+                        roi_mask=hand_roi_latent,
                     )
                 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
@@ -1873,6 +1969,17 @@ def main():
                 progress_bar.update(1)
                 global_step += 1
                 accelerator.log({"train_loss": train_loss}, step=global_step)
+                if args.enable_roi_token_merge:
+                    roi_stats = accelerator.unwrap_model(transformer3d).last_roi_stats
+                    if roi_stats is not None:
+                        accelerator.log(
+                            {
+                                "roi/avg_roi_tokens": roi_stats.get("roi_tokens", 0.0),
+                                "roi/avg_bg_tokens": roi_stats.get("bg_tokens", 0.0),
+                                "roi/seq_len": roi_stats.get("seq_len", 0.0),
+                            },
+                            step=global_step,
+                        )
                 train_loss = 0.0
 
                 if global_step % args.checkpointing_steps == 0:

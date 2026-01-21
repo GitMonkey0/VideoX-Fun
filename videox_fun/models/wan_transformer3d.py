@@ -554,6 +554,10 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         add_ref_conv=False,
         in_dim_ref_conv=16,
         cross_attn_type=None,
+        enable_roi_token_merge=False,
+        roi_merge_stride=2,
+        roi_token_budget_ratio=1.0,
+        roi_mask_threshold=0.5,
     ):
         r"""
         Initialize the diffusion model backbone.
@@ -610,6 +614,10 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.qk_norm = qk_norm
         self.cross_attn_norm = cross_attn_norm
         self.eps = eps
+        self.enable_roi_token_merge = enable_roi_token_merge
+        self.roi_merge_stride = roi_merge_stride
+        self.roi_token_budget_ratio = roi_token_budget_ratio
+        self.roi_mask_threshold = roi_mask_threshold
 
         # embeddings
         self.patch_embedding = nn.Conv3d(
@@ -672,6 +680,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.all_gather = None
         self.sp_world_size = 1
         self.sp_world_rank = 0
+        self.last_roi_stats = None
         self.init_weights()
 
     def _set_gradient_checkpointing(self, *args, **kwargs):
@@ -785,6 +794,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         y_camera=None,
         full_ref=None,
         subject_ref=None,
+        roi_mask=None,
         cond_flag=True,
     ):
         r"""
@@ -831,30 +841,154 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
         grid_sizes = torch.stack(
             [torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
+        grid_sizes_unpatch = grid_sizes
+        expand_indices = None
+        use_roi_token_merge = (
+            self.enable_roi_token_merge
+            and roi_mask is not None
+            and full_ref is None
+            and subject_ref is None
+            and t.dim() == 1
+            and self.sp_world_size == 1
+        )
 
-        x = [u.flatten(2).transpose(1, 2) for u in x]
-        if self.ref_conv is not None and full_ref is not None:
-            full_ref = self.ref_conv(full_ref).flatten(2).transpose(1, 2)
-            grid_sizes = torch.stack([torch.tensor([u[0] + 1, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
-            seq_len += full_ref.size(1)
-            x = [torch.concat([_full_ref.unsqueeze(0), u], dim=1) for _full_ref, u in zip(full_ref, x)]
-            if t.dim() != 1 and t.size(1) < seq_len:
-                pad_size = seq_len - t.size(1)
-                last_elements = t[:, -1].unsqueeze(1)
-                padding = last_elements.repeat(1, pad_size)
-                t = torch.cat([padding, t], dim=1)
+        if use_roi_token_merge:
+            roi_mask = roi_mask.to(device=device, dtype=x[0].dtype)
+            tokens_list = []
+            seq_lens_list = []
+            expand_indices = []
+            roi_token_counts = []
+            bg_token_counts = []
+            budget = max(1, int(seq_len * self.roi_token_budget_ratio))
 
-        if subject_ref is not None:
-            subject_ref_frames = subject_ref.size(2)
-            subject_ref = self.patch_embedding(subject_ref).flatten(2).transpose(1, 2)
-            grid_sizes = torch.stack([torch.tensor([u[0] + subject_ref_frames, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
-            seq_len += subject_ref.size(1)
-            x = [torch.concat([u, _subject_ref.unsqueeze(0)], dim=1) for _subject_ref, u in zip(subject_ref, x)]
-            if t.dim() != 1 and t.size(1) < seq_len:
-                pad_size = seq_len - t.size(1)
-                last_elements = t[:, -1].unsqueeze(1)
-                padding = last_elements.repeat(1, pad_size)
-                t = torch.cat([t, padding], dim=1)
+            for i, u in enumerate(x):
+                f, h, w = u.shape[2], u.shape[3], u.shape[4]
+                full_len = f * h * w
+                roi = roi_mask[i].unsqueeze(0).unsqueeze(0)
+                roi = torch.nn.functional.interpolate(
+                    roi,
+                    size=(f, h, w),
+                    mode="trilinear",
+                    align_corners=False,
+                )[0, 0]
+                roi = roi > self.roi_mask_threshold
+
+                s = max(1, int(self.roi_merge_stride))
+                hm = h // s
+                wm = w // s
+                if s > 1 and hm > 0 and wm > 0:
+                    roi = roi.clone()
+                    roi[:, hm * s:, :] = True
+                    roi[:, :, wm * s:] = True
+
+                u_grid = u[0].permute(1, 2, 3, 0).contiguous()
+                u_flat = u_grid.view(-1, u_grid.size(-1))
+                roi_flat = roi.view(-1)
+                roi_indices = torch.nonzero(roi_flat, as_tuple=False).squeeze(1)
+                roi_tokens = u_flat[roi_indices] if roi_indices.numel() > 0 else u_flat[:0]
+                n_roi = roi_tokens.size(0)
+
+                bg_tokens = u_flat[:0]
+                bg_cell_indices = None
+                n_bg = 0
+                if s > 1 and hm > 0 and wm > 0:
+                    g = u_grid[:, :hm * s, :wm * s, :].view(f, hm, s, wm, s, u_grid.size(-1))
+                    g_merged = g.mean(dim=(2, 4))
+                    roi_cell = roi[:, :hm * s, :wm * s].view(f, hm, s, wm, s).amax(dim=(2, 4))
+                    bg_cell_mask = ~roi_cell
+                    bg_tokens = g_merged[bg_cell_mask]
+                    n_bg = bg_tokens.size(0)
+                    bg_cell_indices = torch.full((f, hm, wm), -1, device=device, dtype=torch.long)
+                    if n_bg > 0:
+                        bg_cell_indices[bg_cell_mask] = torch.arange(n_bg, device=device)
+
+                if budget < n_roi:
+                    tokens = u_flat
+                    tokens_len = tokens.size(0)
+                    expand_index = torch.arange(tokens_len, device=device, dtype=torch.long)
+                else:
+                    max_bg = budget - n_roi
+                    if n_bg > max_bg:
+                        if max_bg > 0:
+                            bg_tokens = bg_tokens[:max_bg]
+                            if bg_cell_indices is not None:
+                                bg_cell_indices = torch.where(
+                                    bg_cell_indices >= 0,
+                                    torch.clamp(bg_cell_indices, max=max_bg - 1),
+                                    bg_cell_indices,
+                                )
+                            n_bg = max_bg
+                        else:
+                            bg_tokens = u_flat[:0]
+                            n_bg = 0
+                            if bg_cell_indices is not None:
+                                bg_cell_indices = torch.full_like(bg_cell_indices, -1)
+
+                    tokens = torch.cat([roi_tokens, bg_tokens], dim=0)
+                    tokens_len = tokens.size(0)
+                    expand_index = torch.zeros(full_len, device=device, dtype=torch.long)
+                    if roi_indices.numel() > 0:
+                        expand_index[roi_indices] = torch.arange(n_roi, device=device)
+                    if bg_cell_indices is not None and bg_cell_indices.numel() > 0:
+                        region_len = f * hm * s * wm * s
+                        if n_bg > 0:
+                            bg_cell_indices = torch.where(bg_cell_indices >= 0, bg_cell_indices + n_roi, bg_cell_indices)
+                            h_idx = torch.arange(hm * s, device=device)
+                            w_idx = torch.arange(wm * s, device=device)
+                            h_cell = (h_idx // s).view(hm * s, 1).expand(hm * s, wm * s)
+                            w_cell = (w_idx // s).view(1, wm * s).expand(hm * s, wm * s)
+                            bg_index_full = bg_cell_indices[:, h_cell, w_cell].reshape(-1)
+                            bg_region_flat = (~roi[:, :hm * s, :wm * s]).reshape(-1)
+                            if bg_region_flat.numel() > 0:
+                                expand_index[:region_len][bg_region_flat] = bg_index_full[bg_region_flat]
+                        else:
+                            fill_index = max(n_roi - 1, 0)
+                            bg_region_flat = (~roi[:, :hm * s, :wm * s]).reshape(-1)
+                            if bg_region_flat.numel() > 0:
+                                expand_index[:region_len][bg_region_flat] = fill_index
+
+                tokens_list.append(tokens.unsqueeze(0))
+                seq_lens_list.append(tokens_len)
+                expand_indices.append(expand_index)
+                roi_token_counts.append(n_roi)
+                bg_token_counts.append(n_bg)
+
+            seq_len = max(budget, max(seq_lens_list))
+            grid_sizes = torch.stack([
+                torch.tensor([1, 1, seq_len], dtype=torch.long, device=device)
+                for _ in tokens_list
+            ])
+            x = tokens_list
+            self.last_roi_stats = {
+                "roi_tokens": float(np.mean(roi_token_counts)) if roi_token_counts else 0.0,
+                "bg_tokens": float(np.mean(bg_token_counts)) if bg_token_counts else 0.0,
+                "seq_len": float(seq_len),
+            }
+        else:
+            x = [u.flatten(2).transpose(1, 2) for u in x]
+            if self.ref_conv is not None and full_ref is not None:
+                full_ref = self.ref_conv(full_ref).flatten(2).transpose(1, 2)
+                grid_sizes = torch.stack([torch.tensor([u[0] + 1, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
+                seq_len += full_ref.size(1)
+                x = [torch.concat([_full_ref.unsqueeze(0), u], dim=1) for _full_ref, u in zip(full_ref, x)]
+                if t.dim() != 1 and t.size(1) < seq_len:
+                    pad_size = seq_len - t.size(1)
+                    last_elements = t[:, -1].unsqueeze(1)
+                    padding = last_elements.repeat(1, pad_size)
+                    t = torch.cat([padding, t], dim=1)
+
+            if subject_ref is not None:
+                subject_ref_frames = subject_ref.size(2)
+                subject_ref = self.patch_embedding(subject_ref).flatten(2).transpose(1, 2)
+                grid_sizes = torch.stack([torch.tensor([u[0] + subject_ref_frames, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
+                seq_len += subject_ref.size(1)
+                x = [torch.concat([u, _subject_ref.unsqueeze(0)], dim=1) for _subject_ref, u in zip(subject_ref, x)]
+                if t.dim() != 1 and t.size(1) < seq_len:
+                    pad_size = seq_len - t.size(1)
+                    last_elements = t[:, -1].unsqueeze(1)
+                    padding = last_elements.repeat(1, pad_size)
+                    t = torch.cat([t, padding], dim=1)
+            self.last_roi_stats = None
         
         seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long)
         if self.sp_world_size > 1:
@@ -1017,6 +1151,12 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         t=t  
                     )
                     x = block(x, **kwargs)
+
+        if use_roi_token_merge and expand_indices is not None:
+            x = torch.stack([
+                x[i].index_select(0, expand_indices[i]) for i in range(x.size(0))
+            ])
+            grid_sizes = grid_sizes_unpatch
 
         # head
         if torch.is_grad_enabled() and self.gradient_checkpointing:
