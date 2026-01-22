@@ -22,6 +22,24 @@ The metadata_control.json is a little different from normal json in Wan-Fun, you
 ]
 ```
 
+Optional Hand Labanotation (HL) fields can be added to each sample. HL is treated as an extra control modality and is fully optional.
+
+```json
+[
+    {
+      "file_path": "train/00000001.mp4",
+      "control_file_path": "control/00000001.mp4",
+      "hl_file_path": "hl/00000001.npz",
+      "text": "A group of young men in suits and sunglasses are walking down a city street.",
+      "type": "video"
+    }
+]
+```
+
+Supported HL file formats:
+- `.npz` with keys `hl_ids` (shape `[F, J]`), `hl_dirs` (shape `[F, J, 3]`), and optional `hl_latents` (shape `[F, C, H, W]`).
+- `.npy` storing either a dict with the same keys or a raw `hl_latents` tensor.
+
 Some parameters in the sh file can be confusing, and they are explained in this document:
 
 - `enable_bucket` is used to enable bucket training. When enabled, the model does not crop the images and videos at the center, but instead, it trains the entire images and videos after grouping them into buckets based on resolution.
@@ -54,6 +72,13 @@ Some parameters in the sh file can be confusing, and they are explained in this 
  - `first_frame` is used in V1.0 because V1.0 supports using a specified start frame as the control image. The Control-Camera models use the first frame as the control image.
  - `random` is used in V1.1 because V1.1 supports both using a specified start frame and a reference image as the control image.
 - `add_full_ref_image_in_self_attention` determines whether to include the reference image in self-attention. This option is used in V1.1, as it supports using a reference image as the control image. It should not be used in V1.0 and Control-Camera models.
+- HL options (optional):
+  - `enable_hl_context` adds HL tokens to the cross-attention context.
+  - `enable_hl_adapter` enables an HL adapter path (expects `hl_latents`).
+  - `hl_num_joints`, `hl_num_classes`, `hl_embed_dim`, `hl_dir_dim` control HL tokenization.
+  - `hl_dropout_prob`, `hl_frame_dropout_prob` enable HL dropout for robustness.
+  - `hl_frame_stride`, `hl_joint_stride`, `hl_max_tokens` control HL token length.
+  - Add `hl_` to `trainable_modules` if you want to train HL embeddings/adapter.
 
 When train model with multi machines, please set the params as follows:
 ```sh

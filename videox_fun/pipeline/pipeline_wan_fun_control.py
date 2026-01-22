@@ -477,6 +477,10 @@ class WanFunControlPipeline(DiffusionPipeline):
         control_camera_video: Union[torch.FloatTensor] = None,
         start_image: Union[torch.FloatTensor] = None,
         ref_image: Union[torch.FloatTensor] = None,
+        hl_ids: Optional[torch.Tensor] = None,
+        hl_dirs: Optional[torch.Tensor] = None,
+        hl_tokens: Optional[torch.Tensor] = None,
+        hl_latents: Optional[torch.Tensor] = None,
         num_frames: int = 49,
         num_inference_steps: int = 50,
         timesteps: Optional[List[int]] = None,
@@ -558,6 +562,21 @@ class WanFunControlPipeline(DiffusionPipeline):
             in_prompt_embeds = negative_prompt_embeds + prompt_embeds
         else:
             in_prompt_embeds = prompt_embeds
+
+        hl_tokens_input = None
+        if hl_tokens is None and (hl_ids is not None or hl_dirs is not None):
+            if hl_ids is not None:
+                hl_ids = torch.as_tensor(hl_ids, device=device)
+            if hl_dirs is not None:
+                hl_dirs = torch.as_tensor(hl_dirs, device=device)
+            hl_tokens = self.transformer.encode_hl_context(hl_ids, hl_dirs)
+        if hl_tokens is not None:
+            if torch.is_tensor(hl_tokens):
+                hl_tokens = [u for u in hl_tokens]
+            hl_tokens_input = hl_tokens + hl_tokens if do_classifier_free_guidance else hl_tokens
+
+        if hl_latents is not None:
+            hl_latents = torch.as_tensor(hl_latents, device=device, dtype=weight_dtype)
 
         # 4. Prepare timesteps
         if isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
@@ -736,6 +755,12 @@ class WanFunControlPipeline(DiffusionPipeline):
                     torch.cat([clip_context] * 2) if do_classifier_free_guidance else clip_context
                 )
 
+                hl_latents_input = None
+                if hl_latents is not None:
+                    hl_latents_input = (
+                        torch.cat([hl_latents] * 2) if do_classifier_free_guidance else hl_latents
+                    ).to(device, weight_dtype)
+
                 if ref_image_latentes is not None:
                     full_ref = (
                         torch.cat([ref_image_latentes] * 2) if do_classifier_free_guidance else ref_image_latentes
@@ -755,8 +780,10 @@ class WanFunControlPipeline(DiffusionPipeline):
                         seq_len=seq_len,
                         y=control_latents_input,
                         y_camera=control_camera_latents_input, 
+                        y_hl=hl_latents_input,
                         full_ref=full_ref,
                         clip_fea=clip_context_input,
+                        hl_tokens=hl_tokens_input,
                     )
 
                 # perform guidance

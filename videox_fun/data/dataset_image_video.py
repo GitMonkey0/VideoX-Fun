@@ -276,6 +276,13 @@ class ImageVideoControlDataset(Dataset):
         return_file_name=False,
         enable_subject_info=False,
         padding_subject_info=True,
+        enable_hl_info=False,
+        hl_file_key="hl_file_path",
+        hl_ids_key="hl_ids",
+        hl_dirs_key="hl_dirs",
+        hl_latents_key="hl_latents_path",
+        hl_num_joints=20,
+        hl_dir_dim=3,
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
@@ -311,6 +318,13 @@ class ImageVideoControlDataset(Dataset):
         self.enable_camera_info = enable_camera_info
         self.enable_subject_info = enable_subject_info
         self.padding_subject_info = padding_subject_info
+        self.enable_hl_info = enable_hl_info
+        self.hl_file_key = hl_file_key
+        self.hl_ids_key = hl_ids_key
+        self.hl_dirs_key = hl_dirs_key
+        self.hl_latents_key = hl_latents_key
+        self.hl_num_joints = hl_num_joints
+        self.hl_dir_dim = hl_dir_dim
 
         self.video_length_drop_start = video_length_drop_start
         self.video_length_drop_end = video_length_drop_end
@@ -344,6 +358,129 @@ class ImageVideoControlDataset(Dataset):
         ])
 
         self.larger_side_of_image_and_video = max(min(self.image_sample_size), min(self.video_sample_size))
+
+    def _resolve_path(self, path):
+        if path is None:
+            return None
+        if self.data_root is None:
+            return path
+        return os.path.join(self.data_root, path)
+
+    def _pad_to_length(self, array, length):
+        if array is None or array.shape[0] >= length:
+            return array
+        pad_count = length - array.shape[0]
+        pad = np.repeat(array[-1:], pad_count, axis=0)
+        return np.concatenate([array, pad], axis=0)
+
+    def _ensure_frame_dim(self, array):
+        if array is None:
+            return None
+        if array.ndim == 1:
+            return array[None, :]
+        if array.ndim == 2:
+            if array.shape[-1] == 3:
+                return array[None, :, :]
+            return array[None, :]
+        if array.ndim == 3 and array.shape[-1] == 3:
+            return array[None, :, :, :]
+        return array
+
+    def _load_hl_file(self, hl_path):
+        if hl_path is None:
+            return None, None, None
+        hl_path = self._resolve_path(hl_path)
+        if hl_path is None or not os.path.exists(hl_path):
+            return None, None, None
+
+        hl_ids = None
+        hl_dirs = None
+        hl_latents = None
+        if hl_path.endswith(".npz"):
+            data = np.load(hl_path, allow_pickle=True)
+            hl_ids = data.get("hl_ids", None)
+            hl_dirs = data.get("hl_dirs", None)
+            hl_latents = data.get("hl_latents", None)
+        elif hl_path.endswith(".npy"):
+            data = np.load(hl_path, allow_pickle=True)
+            if isinstance(data, np.lib.npyio.NpzFile):
+                hl_ids = data.get("hl_ids", None)
+                hl_dirs = data.get("hl_dirs", None)
+                hl_latents = data.get("hl_latents", None)
+            else:
+                try:
+                    item = data.item()
+                except ValueError:
+                    item = None
+                if isinstance(item, dict):
+                    hl_ids = item.get("hl_ids", None)
+                    hl_dirs = item.get("hl_dirs", None)
+                    hl_latents = item.get("hl_latents", None)
+                else:
+                    hl_latents = data
+        return hl_ids, hl_dirs, hl_latents
+
+    def _select_hl_frames(self, array, batch_index):
+        if array is None:
+            return None
+        array = self._ensure_frame_dim(array)
+        if batch_index is None:
+            return array
+        target_length = int(np.max(batch_index)) + 1
+        array = self._pad_to_length(array, target_length)
+        return array[batch_index]
+
+    def _prepare_hl_latents(self, hl_latents):
+        if hl_latents is None:
+            return None
+        hl_latents = self._ensure_frame_dim(hl_latents)
+        if hl_latents.ndim != 4:
+            return hl_latents
+        if hl_latents.shape[-1] <= 16 and hl_latents.shape[1] > 16:
+            hl_latents = np.transpose(hl_latents, (0, 3, 1, 2))
+        return hl_latents
+
+    def _load_hl_data(self, data_info, batch_index=None, num_frames=None):
+        if not self.enable_hl_info:
+            return None, None, None
+
+        hl_ids = None
+        hl_dirs = None
+        hl_latents = None
+
+        hl_file_path = data_info.get(self.hl_file_key, None)
+        if hl_file_path is not None:
+            hl_ids, hl_dirs, hl_latents = self._load_hl_file(hl_file_path)
+
+        if hl_ids is None and self.hl_ids_key in data_info:
+            hl_ids = np.array(data_info[self.hl_ids_key], dtype=np.int64)
+        if hl_dirs is None and self.hl_dirs_key in data_info:
+            hl_dirs = np.array(data_info[self.hl_dirs_key], dtype=np.float32)
+
+        hl_latents_path = data_info.get(self.hl_latents_key, None)
+        if hl_latents is None and hl_latents_path is not None:
+            _, _, hl_latents = self._load_hl_file(hl_latents_path)
+
+        hl_ids = self._select_hl_frames(hl_ids, batch_index)
+        hl_dirs = self._select_hl_frames(hl_dirs, batch_index)
+        hl_latents = self._select_hl_frames(self._prepare_hl_latents(hl_latents), batch_index)
+
+        if hl_ids is not None:
+            hl_ids = np.asarray(hl_ids, dtype=np.int64)
+        if hl_dirs is not None:
+            hl_dirs = np.asarray(hl_dirs, dtype=np.float32)
+
+        if num_frames is None and batch_index is not None:
+            num_frames = len(batch_index)
+        if num_frames is None:
+            num_frames = 1
+
+        if hl_ids is None:
+            hl_ids = np.zeros((num_frames, self.hl_num_joints), dtype=np.int64)
+        if hl_dirs is None:
+            hl_dirs = np.zeros((num_frames, self.hl_num_joints, self.hl_dir_dim), dtype=np.float32)
+
+        return hl_ids, hl_dirs, hl_latents
     
     def get_batch(self, idx):
         data_info = self.dataset[idx % len(self.dataset)]
@@ -493,7 +630,9 @@ class ImageVideoControlDataset(Dataset):
             else:
                 subject_image = None
 
-            return pixel_values, control_pixel_values, subject_image, control_camera_values, text, "video"
+            hl_ids, hl_dirs, hl_latents = self._load_hl_data(data_info, batch_index, num_frames=len(batch_index))
+
+            return pixel_values, control_pixel_values, subject_image, control_camera_values, text, "video", hl_ids, hl_dirs, hl_latents
         else:
             image_path, text = data_info['file_path'], data_info['text']
             if self.data_root is not None:
@@ -549,7 +688,9 @@ class ImageVideoControlDataset(Dataset):
             else:
                 subject_image = None
 
-            return image, control_image, subject_image, None, text, 'image'
+            hl_ids, hl_dirs, hl_latents = self._load_hl_data(data_info, None, num_frames=1)
+
+            return image, control_image, subject_image, None, text, 'image', hl_ids, hl_dirs, hl_latents
 
     def __len__(self):
         return self.length
@@ -565,7 +706,7 @@ class ImageVideoControlDataset(Dataset):
                 if data_type_local != data_type:
                     raise ValueError("data_type_local != data_type")
 
-                pixel_values, control_pixel_values, subject_image, control_camera_values, name, data_type = self.get_batch(idx)
+                pixel_values, control_pixel_values, subject_image, control_camera_values, name, data_type, hl_ids, hl_dirs, hl_latents = self.get_batch(idx)
 
                 sample["pixel_values"] = pixel_values
                 sample["control_pixel_values"] = control_pixel_values
@@ -573,6 +714,11 @@ class ImageVideoControlDataset(Dataset):
                 sample["text"] = name
                 sample["data_type"] = data_type
                 sample["idx"] = idx
+
+                if self.enable_hl_info:
+                    sample["hl_ids"] = hl_ids
+                    sample["hl_dirs"] = hl_dirs
+                    sample["hl_latents"] = hl_latents
 
                 if self.enable_camera_info:
                     sample["control_camera_values"] = control_camera_values

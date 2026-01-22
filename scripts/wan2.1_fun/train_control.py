@@ -614,6 +614,106 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--enable_hl_context",
+        action="store_true",
+        help="Enable HL as extra context tokens for cross-attention.",
+    )
+    parser.add_argument(
+        "--enable_hl_adapter",
+        action="store_true",
+        help="Enable HL adapter path (expects hl_latents in batch).",
+    )
+    parser.add_argument(
+        "--hl_file_key",
+        type=str,
+        default="hl_file_path",
+        help="Metadata key for HL npy/npz path.",
+    )
+    parser.add_argument(
+        "--hl_ids_key",
+        type=str,
+        default="hl_ids",
+        help="Metadata key for inline HL ids.",
+    )
+    parser.add_argument(
+        "--hl_dirs_key",
+        type=str,
+        default="hl_dirs",
+        help="Metadata key for inline HL dirs.",
+    )
+    parser.add_argument(
+        "--hl_latents_key",
+        type=str,
+        default="hl_latents_path",
+        help="Metadata key for HL latents path.",
+    )
+    parser.add_argument(
+        "--hl_num_classes",
+        type=int,
+        default=26,
+        help="Number of HL symbol classes.",
+    )
+    parser.add_argument(
+        "--hl_num_joints",
+        type=int,
+        default=20,
+        help="Number of HL joints per hand (20 single-hand, 40 double-hand).",
+    )
+    parser.add_argument(
+        "--hl_embed_dim",
+        type=int,
+        default=256,
+        help="HL symbol embedding dimension.",
+    )
+    parser.add_argument(
+        "--hl_dir_dim",
+        type=int,
+        default=3,
+        help="HL direction vector dimension.",
+    )
+    parser.add_argument(
+        "--hl_dropout_prob",
+        type=float,
+        default=0.0,
+        help="Drop HL tokens per-sample with this probability.",
+    )
+    parser.add_argument(
+        "--hl_frame_dropout_prob",
+        type=float,
+        default=0.0,
+        help="Drop HL tokens per-frame with this probability.",
+    )
+    parser.add_argument(
+        "--hl_frame_stride",
+        type=int,
+        default=1,
+        help="Stride for sampling HL frames.",
+    )
+    parser.add_argument(
+        "--hl_joint_stride",
+        type=int,
+        default=1,
+        help="Stride for sampling HL joints.",
+    )
+    parser.add_argument(
+        "--hl_max_tokens",
+        type=int,
+        default=None,
+        help="Maximum number of HL tokens per sample.",
+    )
+    parser.add_argument(
+        "--hl_adapter_in_dim",
+        type=int,
+        default=16,
+        help="Input channels for HL adapter latents.",
+    )
+    parser.add_argument(
+        "--hl_adapter_downscale_factor",
+        type=int,
+        default=8,
+        help="Downscale factor for HL adapter pixel unshuffle.",
+    )
+    parser.add_argument(
         "--weighting_scheme",
         type=str,
         default="none",
@@ -666,6 +766,17 @@ def main():
     logging_dir = os.path.join(args.output_dir, args.logging_dir)
 
     config = OmegaConf.load(args.config_path)
+    if "transformer_additional_kwargs" not in config:
+        config["transformer_additional_kwargs"] = {}
+
+    config["transformer_additional_kwargs"]["add_hl_context"] = args.enable_hl_context
+    config["transformer_additional_kwargs"]["hl_num_classes"] = args.hl_num_classes
+    config["transformer_additional_kwargs"]["hl_num_joints"] = args.hl_num_joints
+    config["transformer_additional_kwargs"]["hl_embed_dim"] = args.hl_embed_dim
+    config["transformer_additional_kwargs"]["hl_dir_dim"] = args.hl_dir_dim
+    config["transformer_additional_kwargs"]["add_hl_adapter"] = args.enable_hl_adapter
+    config["transformer_additional_kwargs"]["in_dim_hl_adapter"] = args.hl_adapter_in_dim
+    config["transformer_additional_kwargs"]["downscale_factor_hl_adapter"] = args.hl_adapter_downscale_factor
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
 
     accelerator = Accelerator(
@@ -1056,7 +1167,14 @@ def main():
         video_repeat=args.video_repeat, 
         image_sample_size=args.image_sample_size,
         enable_bucket=args.enable_bucket, 
-        enable_camera_info=args.train_mode == "control_camera_ref"
+        enable_camera_info=args.train_mode == "control_camera_ref",
+        enable_hl_info=args.enable_hl_context or args.enable_hl_adapter,
+        hl_file_key=args.hl_file_key,
+        hl_ids_key=args.hl_ids_key,
+        hl_dirs_key=args.hl_dirs_key,
+        hl_latents_key=args.hl_latents_key,
+        hl_num_joints=args.hl_num_joints,
+        hl_dir_dim=args.hl_dir_dim,
     )
 
     def worker_init_fn(_seed):
@@ -1135,6 +1253,11 @@ def main():
             new_examples["text"]         = []
             # Used in Control Mode
             new_examples["control_pixel_values"] = []
+            if args.enable_hl_context:
+                new_examples["hl_ids"] = []
+                new_examples["hl_dirs"] = []
+            if args.enable_hl_adapter:
+                new_examples["hl_latents"] = []
             # Used in Control Ref Mode
             if args.train_mode != "control":
                 new_examples["ref_pixel_values"] = []
@@ -1289,6 +1412,31 @@ def main():
     
                 new_examples["pixel_values"].append(transform(pixel_values)[:batch_video_length])
                 new_examples["control_pixel_values"].append(transform(control_pixel_values))
+
+                if args.enable_hl_context:
+                    hl_ids = example.get("hl_ids", None)
+                    hl_dirs = example.get("hl_dirs", None)
+                    if hl_ids is None:
+                        hl_ids = np.zeros((pixel_values.size(0), args.hl_num_joints), dtype=np.int64)
+                    if hl_dirs is None:
+                        hl_dirs = np.zeros((pixel_values.size(0), args.hl_num_joints, args.hl_dir_dim), dtype=np.float32)
+                    hl_ids = torch.as_tensor(hl_ids, dtype=torch.long)[:batch_video_length]
+                    hl_dirs = torch.as_tensor(hl_dirs, dtype=torch.float32)[:batch_video_length]
+                    new_examples["hl_ids"].append(hl_ids)
+                    new_examples["hl_dirs"].append(hl_dirs)
+
+                if args.enable_hl_adapter:
+                    hl_latents = example.get("hl_latents", None)
+                    if hl_latents is None:
+                        height, width = new_examples["pixel_values"][-1].shape[-2:]
+                        hl_latents = torch.zeros((pixel_values.size(0), args.hl_adapter_in_dim, height, width), dtype=torch.float32)
+                    else:
+                        hl_latents = torch.as_tensor(hl_latents, dtype=torch.float32)
+                    if hl_latents.dim() == 4:
+                        hl_latents = hl_latents[:batch_video_length]
+                        if hl_latents.shape[0] != args.hl_adapter_in_dim:
+                            hl_latents = hl_latents.permute(1, 0, 2, 3).contiguous()
+                    new_examples["hl_latents"].append(hl_latents)
             
                 if args.train_mode == "control_camera_ref":
                     control_camera_values = example.get("control_camera_values", None)
@@ -1340,6 +1488,11 @@ def main():
                 new_examples["clip_idx"] = torch.tensor(new_examples["clip_idx"])
             if args.train_mode == "control_camera_ref":
                 new_examples["control_camera_values"] = torch.stack([example[:batch_video_length] for example in new_examples["control_camera_values"]])
+            if args.enable_hl_context:
+                new_examples["hl_ids"] = torch.stack([example for example in new_examples["hl_ids"]])
+                new_examples["hl_dirs"] = torch.stack([example for example in new_examples["hl_dirs"]])
+            if args.enable_hl_adapter:
+                new_examples["hl_latents"] = torch.stack([example for example in new_examples["hl_latents"]])
 
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
@@ -1536,6 +1689,10 @@ def main():
                 if args.train_mode == "control_camera_ref":
                     control_camera_values = batch["control_camera_values"].to(weight_dtype)
 
+                hl_ids = batch.get("hl_ids", None)
+                hl_dirs = batch.get("hl_dirs", None)
+                hl_latents = batch.get("hl_latents", None)
+
                 # Increase the batch size when the length of the latent sequence of the current sample is small
                 if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
                     if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
@@ -1543,6 +1700,12 @@ def main():
                         control_pixel_values = torch.tile(control_pixel_values, (4, 1, 1, 1, 1))
                         if args.train_mode == "control_camera_ref":
                             control_camera_values = torch.tile(control_camera_values, (4, 1, 1, 1, 1))
+                        if hl_ids is not None:
+                            hl_ids = torch.tile(hl_ids, (4, 1, 1))
+                        if hl_dirs is not None:
+                            hl_dirs = torch.tile(hl_dirs, (4, 1, 1, 1))
+                        if hl_latents is not None:
+                            hl_latents = torch.tile(hl_latents, (4, 1, 1, 1, 1))
                         if args.enable_text_encoder_in_dataloader:
                             batch['encoder_hidden_states'] = torch.tile(batch['encoder_hidden_states'], (4, 1, 1))
                             batch['encoder_attention_mask'] = torch.tile(batch['encoder_attention_mask'], (4, 1))
@@ -1553,6 +1716,12 @@ def main():
                         control_pixel_values = torch.tile(control_pixel_values, (2, 1, 1, 1, 1))
                         if args.train_mode == "control_camera_ref":
                             control_camera_values = torch.tile(control_camera_values, (2, 1, 1, 1, 1))
+                        if hl_ids is not None:
+                            hl_ids = torch.tile(hl_ids, (2, 1, 1))
+                        if hl_dirs is not None:
+                            hl_dirs = torch.tile(hl_dirs, (2, 1, 1, 1))
+                        if hl_latents is not None:
+                            hl_latents = torch.tile(hl_latents, (2, 1, 1, 1, 1))
                         if args.enable_text_encoder_in_dataloader:
                             batch['encoder_hidden_states'] = torch.tile(batch['encoder_hidden_states'], (2, 1, 1))
                             batch['encoder_attention_mask'] = torch.tile(batch['encoder_attention_mask'], (2, 1))
@@ -1600,6 +1769,12 @@ def main():
 
                     pixel_values = pixel_values[:, :temp_n_frames, :, :]
                     control_pixel_values = control_pixel_values[:, :temp_n_frames, :, :]
+                    if hl_ids is not None:
+                        hl_ids = hl_ids[:, :temp_n_frames, :]
+                    if hl_dirs is not None:
+                        hl_dirs = hl_dirs[:, :temp_n_frames, :, :]
+                    if hl_latents is not None:
+                        hl_latents = hl_latents[:, :, :temp_n_frames, :, :]
                     
                 # Keep all node same token length to accelerate the traning when resolution grows.
                 if args.keep_all_node_same_token_length:
@@ -1623,6 +1798,19 @@ def main():
 
                     pixel_values = pixel_values[:, :actual_video_length, :, :]
                     control_pixel_values = control_pixel_values[:, :actual_video_length, :, :]
+                    if hl_ids is not None:
+                        hl_ids = hl_ids[:, :actual_video_length, :]
+                    if hl_dirs is not None:
+                        hl_dirs = hl_dirs[:, :actual_video_length, :, :]
+                    if hl_latents is not None:
+                        hl_latents = hl_latents[:, :, :actual_video_length, :, :]
+
+                if args.enable_hl_adapter and hl_latents is None:
+                    hl_latents = torch.zeros(
+                        (pixel_values.size(0), args.hl_adapter_in_dim, pixel_values.size(1), pixel_values.size(3), pixel_values.size(4)),
+                        device=pixel_values.device,
+                        dtype=pixel_values.dtype,
+                    )
 
                 if args.low_vram:
                     torch.cuda.empty_cache()
@@ -1752,6 +1940,40 @@ def main():
                     text_encoder.to('cpu')
                     torch.cuda.empty_cache()
 
+                hl_tokens = None
+                if args.enable_hl_context and hl_ids is not None:
+                    hl_ids = hl_ids.to(device=latents.device, dtype=torch.long)
+                    if hl_dirs is not None:
+                        hl_dirs = hl_dirs.to(device=latents.device, dtype=torch.float32)
+
+                    if args.hl_frame_stride > 1:
+                        hl_ids = hl_ids[:, :: args.hl_frame_stride]
+                        if hl_dirs is not None:
+                            hl_dirs = hl_dirs[:, :: args.hl_frame_stride]
+                    if args.hl_joint_stride > 1:
+                        hl_ids = hl_ids[:, :, :: args.hl_joint_stride]
+                        if hl_dirs is not None:
+                            hl_dirs = hl_dirs[:, :, :: args.hl_joint_stride]
+
+                    if args.hl_dropout_prob > 0:
+                        drop_mask = torch.rand(hl_ids.size(0), device=hl_ids.device) < args.hl_dropout_prob
+                        hl_ids[drop_mask] = 0
+                        if hl_dirs is not None:
+                            hl_dirs[drop_mask] = 0
+
+                    if args.hl_frame_dropout_prob > 0:
+                        frame_mask = torch.rand(hl_ids.size(0), hl_ids.size(1), device=hl_ids.device) < args.hl_frame_dropout_prob
+                        hl_ids[frame_mask] = 0
+                        if hl_dirs is not None:
+                            hl_dirs[frame_mask] = 0
+
+                    hl_tokens = accelerator.unwrap_model(transformer3d).encode_hl_context(hl_ids, hl_dirs)
+                    if args.hl_max_tokens is not None and hl_tokens.size(1) > args.hl_max_tokens:
+                        hl_tokens = hl_tokens[:, : args.hl_max_tokens]
+
+                if hl_latents is not None:
+                    hl_latents = hl_latents.to(device=latents.device, dtype=weight_dtype)
+
                 bsz, channel, num_frames, height, width = latents.size()
                 noise = torch.randn(latents.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
 
@@ -1807,8 +2029,10 @@ def main():
                         seq_len=seq_len,
                         y=control_latents,
                         y_camera=control_camera_latents if args.train_mode == "control_camera_ref" else None,
+                        y_hl=hl_latents if args.enable_hl_adapter else None,
                         clip_fea=clip_context,
                         full_ref=full_ref if args.add_full_ref_image_in_self_attention else None,
+                        hl_tokens=hl_tokens,
                     )
                 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):

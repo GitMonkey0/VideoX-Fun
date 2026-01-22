@@ -5,6 +5,14 @@ transformer_additional_kwargs:
   dict_mapping:
     in_dim: in_channels
     dim: hidden_size
+  add_hl_context: false
+  hl_num_classes: 26
+  hl_num_joints: 20
+  hl_embed_dim: 256
+  hl_dir_dim: 3
+  add_hl_adapter: false
+  in_dim_hl_adapter: 16
+  downscale_factor_hl_adapter: 8
 
 vae_kwargs:
   vae_subpath: Wan2.1_VAE.pth

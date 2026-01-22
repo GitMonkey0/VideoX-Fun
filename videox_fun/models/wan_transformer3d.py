@@ -553,6 +553,14 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         downscale_factor_control_adapter=8,
         add_ref_conv=False,
         in_dim_ref_conv=16,
+        add_hl_context=False,
+        hl_num_classes=26,
+        hl_num_joints=20,
+        hl_embed_dim=256,
+        hl_dir_dim=3,
+        add_hl_adapter=False,
+        in_dim_hl_adapter=16,
+        downscale_factor_hl_adapter=8,
         cross_attn_type=None,
     ):
         r"""
@@ -659,10 +667,24 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         else:
             self.control_adapter = None
 
+        if add_hl_adapter:
+            self.hl_adapter = SimpleAdapter(in_dim_hl_adapter, dim, kernel_size=patch_size[1:], stride=patch_size[1:], downscale_factor=downscale_factor_hl_adapter)
+        else:
+            self.hl_adapter = None
+
         if add_ref_conv:
             self.ref_conv = nn.Conv2d(in_dim_ref_conv, dim, kernel_size=patch_size[1:], stride=patch_size[1:])
         else:
             self.ref_conv = None
+
+        if add_hl_context:
+            self.hl_symbol_embed = nn.Embedding(hl_num_classes, hl_embed_dim)
+            self.hl_dir_proj = nn.Linear(hl_dir_dim, hl_embed_dim)
+            self.hl_fuse = nn.Linear(hl_embed_dim * 2, text_dim)
+        else:
+            self.hl_symbol_embed = None
+            self.hl_dir_proj = None
+            self.hl_fuse = None
 
         self.teacache = None
         self.cfg_skip_ratio = None
@@ -773,6 +795,26 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 block.self_attn.forward = types.MethodType(
                     usp_attn_forward, block.self_attn)
 
+    def encode_hl_context(self, hl_ids, hl_dirs=None):
+        if self.hl_symbol_embed is None or self.hl_fuse is None:
+            return None
+        if hl_ids is None:
+            return None
+        if hl_ids.dim() == 2:
+            hl_ids = hl_ids.unsqueeze(1)
+        if hl_dirs is not None and hl_dirs.dim() == 3:
+            hl_dirs = hl_dirs.unsqueeze(1)
+
+        hl_ids = hl_ids.long()
+        sym = self.hl_symbol_embed(hl_ids)
+        if hl_dirs is None:
+            dir_feat = torch.zeros_like(sym)
+        else:
+            dir_feat = self.hl_dir_proj(hl_dirs.float())
+        feat = torch.cat([sym, dir_feat], dim=-1)
+        hl_tokens = self.hl_fuse(feat)
+        return hl_tokens.view(hl_tokens.size(0), -1, hl_tokens.size(-1))
+
     @cfg_skip()
     def forward(
         self,
@@ -786,6 +828,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         full_ref=None,
         subject_ref=None,
         cond_flag=True,
+        y_hl=None,
+        hl_tokens=None,
     ):
         r"""
         Forward pass through the diffusion model
@@ -828,6 +872,10 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         if self.control_adapter is not None and y_camera is not None:
             y_camera = self.control_adapter(y_camera)
             x = [u + v for u, v in zip(x, y_camera)]
+
+        if self.hl_adapter is not None and y_hl is not None:
+            y_hl = self.hl_adapter(y_hl)
+            x = [u + v for u, v in zip(x, y_hl)]
 
         grid_sizes = torch.stack(
             [torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
@@ -890,10 +938,22 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
         # context
         context_lens = None
+        if hl_tokens is not None:
+            if torch.is_tensor(hl_tokens):
+                hl_tokens = [u for u in hl_tokens]
+            if torch.is_tensor(context):
+                context = [u for u in context]
+            context = [
+                torch.cat([u, v], dim=0) if v is not None else u
+                for u, v in zip(context, hl_tokens)
+            ]
+
+        max_context_len = max(u.size(0) for u in context)
+        target_len = max(self.text_len, max_context_len)
         context = self.text_embedding(
             torch.stack([
                 torch.cat(
-                    [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
+                    [u, u.new_zeros(target_len - u.size(0), u.size(1))])
                 for u in context
             ]))
 
@@ -1329,6 +1389,14 @@ class Wan2_2Transformer3DModel(WanTransformer3DModel):
         downscale_factor_control_adapter=8,
         add_ref_conv=False,
         in_dim_ref_conv=16,
+        add_hl_context=False,
+        hl_num_classes=26,
+        hl_num_joints=20,
+        hl_embed_dim=256,
+        hl_dir_dim=3,
+        add_hl_adapter=False,
+        in_dim_hl_adapter=16,
+        downscale_factor_hl_adapter=8,
     ):
         r"""
         Initialize the diffusion model backbone.
@@ -1387,6 +1455,14 @@ class Wan2_2Transformer3DModel(WanTransformer3DModel):
             downscale_factor_control_adapter=downscale_factor_control_adapter,
             add_ref_conv=add_ref_conv,
             in_dim_ref_conv=in_dim_ref_conv,
+            add_hl_context=add_hl_context,
+            hl_num_classes=hl_num_classes,
+            hl_num_joints=hl_num_joints,
+            hl_embed_dim=hl_embed_dim,
+            hl_dir_dim=hl_dir_dim,
+            add_hl_adapter=add_hl_adapter,
+            in_dim_hl_adapter=in_dim_hl_adapter,
+            downscale_factor_hl_adapter=downscale_factor_hl_adapter,
             cross_attn_type="cross_attn"
         )
         
