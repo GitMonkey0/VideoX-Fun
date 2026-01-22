@@ -50,4 +50,8 @@ accelerate launch --zero3_save_16bit_model true --use_deepspeed --deepspeed_conf
   --hl_frame_dropout_prob=0.1 \
   --hl_frame_stride=1 \
   --hl_joint_stride=1 \
-  --hl_max_tokens=512 
+  --hl_max_tokens=512 \
+  --hl_file_key="hl_file_path" \
+  --hl_ids_key="hl_ids" \
+  --hl_dirs_key="hl_dirs" \
+  --hl_latents_key="hl_latents_path" 
