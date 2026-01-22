@@ -40,4 +40,5 @@ accelerate launch --zero3_save_16bit_model true --use_deepspeed --deepspeed_conf
   --train_mode="control_ref" \
   --control_ref_image="random" \
   --add_full_ref_image_in_self_attention \
-  --trainable_modules "."
+  --trainable_modules "." 
+  
