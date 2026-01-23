@@ -16,11 +16,11 @@ accelerate launch --zero3_save_16bit_model true --use_deepspeed --deepspeed_conf
   --token_sample_size=512 \
   --video_sample_stride=2 \
   --video_sample_n_frames=81 \
-  --train_batch_size=2 \
-  --gradient_accumulation_steps=2 \
+  --train_batch_size=8 \
+  --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
-  --num_train_epochs=100 \
-  --checkpointing_steps=50 \
+  --num_train_epochs=5 \
+  --checkpointing_steps=350 \
   --learning_rate=2e-05 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
