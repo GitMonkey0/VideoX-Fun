@@ -6,7 +6,7 @@ export DATASET_META_NAME="/mnt/bn/aicoding-lq/luhaotian/data/how2sign/train/vide
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --zero3_save_16bit_model true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --mixed_precision="bf16" scripts/wan2.1_fun/train_control.py \
+accelerate launch --zero3_save_16bit_model true --main_process_port=29501 --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --mixed_precision="bf16" scripts/wan2.1_fun/train_control.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -26,7 +26,7 @@ accelerate launch --zero3_save_16bit_model true --use_deepspeed --deepspeed_conf
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir" \
+  --output_dir="output_dir_hl" \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
