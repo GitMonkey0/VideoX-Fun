@@ -26,7 +26,6 @@ accelerate launch --zero3_save_16bit_model true --use_deepspeed --deepspeed_conf
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir" \
-  --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
