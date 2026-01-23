@@ -805,12 +805,18 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         if hl_dirs is not None and hl_dirs.dim() == 3:
             hl_dirs = hl_dirs.unsqueeze(1)
 
+        # 统一 dtype
+        embed_dtype = self.hl_symbol_embed.weight.dtype
+
         hl_ids = hl_ids.long()
-        sym = self.hl_symbol_embed(hl_ids)
-        if hl_dirs is None:
-            dir_feat = torch.zeros_like(sym)
+        sym = self.hl_symbol_embed(hl_ids)  # -> embed_dtype
+
+        if hl_dirs is not None:
+            hl_dirs = hl_dirs.to(dtype=embed_dtype)
+            dir_feat = self.hl_dir_proj(hl_dirs)
         else:
-            dir_feat = self.hl_dir_proj(hl_dirs.float())
+            dir_feat = torch.zeros_like(sym)
+
         feat = torch.cat([sym, dir_feat], dim=-1)
         hl_tokens = self.hl_fuse(feat)
         return hl_tokens.view(hl_tokens.size(0), -1, hl_tokens.size(-1))
