@@ -1,6 +1,6 @@
-export MODEL_NAME="/mnt/bn/douyin-ai4se-general-wl/lht/ckpt/Wan2.1-Fun-V1.1-1.3B-Control"
+export MODEL_NAME="/mnt/bn/aicoding-lq/luhaotian/ckpt/Wan2.1-Fun-V1.1-1.3B-Control/"
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/bn/douyin-ai4se-general-wl/lht/data/how2sign/train/videx_fun/metadata.json"
+export DATASET_META_NAME="/mnt/bn/aicoding-lq/luhaotian/data/how2sign/train/videx_fun/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -16,11 +16,12 @@ accelerate launch --zero3_save_16bit_model true --use_deepspeed --deepspeed_conf
   --token_sample_size=512 \
   --video_sample_stride=2 \
   --video_sample_n_frames=81 \
-  --train_batch_size=8 \
+  --train_batch_size=2 \
   --gradient_accumulation_steps=1 \
+  --gradient_checkpointing \
   --dataloader_num_workers=8 \
   --num_train_epochs=5 \
-  --checkpointing_steps=350 \
+  --checkpointing_steps=100 \
   --learning_rate=2e-05 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
@@ -37,8 +38,7 @@ accelerate launch --zero3_save_16bit_model true --use_deepspeed --deepspeed_conf
   --uniform_sampling \
   --low_vram \
   --train_mode="control_ref" \
-  --control_ref_image="random" \
-  --add_full_ref_image_in_self_attention \
+  --control_ref_image="first_frame" \
   --trainable_modules "." \
   --enable_hl_context \
   --hl_num_classes=26 \
