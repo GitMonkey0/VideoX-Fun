@@ -1,10 +1,13 @@
-export MODEL_NAME="/mnt/bn/aicoding-lq/luhaotian/ckpt/Wan2.1-Fun-V1.1-1.3B-Control/"
+export MODEL_NAME="/mnt/bn/douyin-ai4se-general-wl/lht/ckpt/Wan2.1-Fun-V1.1-1.3B-Control"
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/bn/aicoding-lq/luhaotian/data/how2sign/train/videx_fun/metadata.json"
+export DATASET_META_NAME="/mnt/bn/douyin-ai4se-general-wl/lht/data/interhand/videox_fun/train_top2000.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
+
+TS=$(date +"%Y%m%d_%H%M%S")
+OUTDIR="output_dir_${TS}"
 
 accelerate launch --zero3_save_16bit_model true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --mixed_precision="bf16" scripts/wan2.1_fun/train_control.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
@@ -14,7 +17,7 @@ accelerate launch --zero3_save_16bit_model true --use_deepspeed --deepspeed_conf
   --image_sample_size=512 \
   --video_sample_size=512 \
   --token_sample_size=512 \
-  --video_sample_stride=2 \
+  --video_sample_stride=1 \
   --video_sample_n_frames=81 \
   --train_batch_size=2 \
   --gradient_accumulation_steps=1 \
@@ -26,7 +29,7 @@ accelerate launch --zero3_save_16bit_model true --use_deepspeed --deepspeed_conf
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir" \
+  --output_dir="${OUTDIR}" \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \

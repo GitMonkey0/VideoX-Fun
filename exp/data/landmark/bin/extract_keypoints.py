@@ -12,7 +12,8 @@ import multiprocessing as mp  # Keep this for multiprocessing
 from typing import Optional, Dict, List, Tuple  
 import time  
 import logging  
-  
+import argparse
+
 # Configure logging  
 logging.basicConfig(level=logging.INFO)  
 logger = logging.getLogger(__name__)  
@@ -141,7 +142,7 @@ def process_single_video(args: Tuple[str, str, bool, bool]) -> Dict:
     try:  
         # 1. 使用 context manager 确保资源清理  
         base_options = python.BaseOptions(  
-            model_asset_path='hand_landmarker.task',  
+            model_asset_path='/mnt/bn/douyin-ai4se-general-wl/lht/ckpt/hand_landmarker.task',  
             delegate=python.BaseOptions.Delegate.GPU if use_gpu else None  
         )  
         options = vision.HandLandmarkerOptions(  
@@ -340,27 +341,43 @@ def batch_process_videos_optimized(
       
     return stats  
   
-if __name__ == "__main__":  
-    # Example usage  
-    input_directory = "train/raw_videos"  
-    output_directory = "train/keypoints"  
-      
-    # Run optimized batch processing  
-    results = batch_process_videos_optimized(  
-        input_dir=input_directory,  
-        output_dir=output_directory,  
-        save_annotated=False,  # Set to True if you need annotated frames  
-        use_gpu=False,         # Enable GPU acceleration  
-        max_workers=1      # Use all available CPU cores  
-    )  
-      
-    # Print summary  
-    print("\n" + "="*50)  
-    print("PROCESSING SUMMARY")  
-    print("="*50)  
-    print(f"Total videos: {results['total_videos']}")  
-    print(f"Successful: {results['successful_videos']}")  
-    print(f"Failed: {results['failed_videos']}")  
-    print(f"Total frames: {results['total_frames_processed']}")  
-    print(f"Processing time: {results['processing_time_seconds']:.2f}s")  
-    print(f"Average FPS: {results['average_fps']:.2f}")
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Batch process videos to extract hand landmarks"
+    )
+    parser.add_argument(
+        "--input_dir", "-i",
+        type=str,
+        required=True,
+        help="输入视频所在目录"
+    )
+    parser.add_argument(
+        "--output_dir", "-o",
+        type=str,
+        required=True,
+        help="输出结果目录（JSON 等）"
+    )
+    args = parser.parse_args()
+
+    # Run optimized batch processing
+    results = batch_process_videos_optimized(
+        input_dir=args.input_dir,
+        output_dir=args.output_dir,
+        save_annotated=False,  # 如需保存可视化帧改为 True
+        use_gpu=False,         # 如需 GPU 在这里改为 True
+        max_workers=1          # 如需并行改这里
+    )
+
+    # Print summary
+    print("\n" + "="*50)
+    print("PROCESSING SUMMARY")
+    print("="*50)
+    if results.get("status") == "no_files":
+        print("No video files found.")
+    else:
+        print(f"Total videos: {results['total_videos']}")
+        print(f"Successful: {results['successful_videos']}")
+        print(f"Failed: {results['failed_videos']}")
+        print(f"Total frames: {results['total_frames_processed']}")
+        print(f"Processing time: {results['processing_time_seconds']:.2f}s")
+        print(f"Average FPS: {results['average_fps']:.2f}")
